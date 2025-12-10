@@ -22,6 +22,10 @@ COPY --from=builder /install /usr/local
 # Copiamos el código
 COPY . .
 
+
+#: crear carpeta de datos y dar permisos al usuario
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
+
 # Variables útiles por defecto
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
