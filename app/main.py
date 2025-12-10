@@ -6,12 +6,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import database
 from .routers import services as services_router
 from .checks import run_checks_for_all_services
+from prometheus_fastapi_instrumentator import Instrumentator  # 👈 ya correcto
 
 
 def create_app() -> FastAPI:
     database.init_db()
 
     app = FastAPI(title="Service Monitor API", version="0.1.0")
+
+    # --- ENDPOINT DE HEALTHCHECK PARA KUBERNETES ---
+    @app.get("/healthz")
+    async def healthz():
+        return {"status": "ok"}
+
+    # --- MÉTRICAS PARA PROMETHEUS ---
+    # Creamos el instrumentator y enganchamos la app
+    instrumentator = Instrumentator().instrument(app)
 
     # CORS por si luego montamos frontend
     app.add_middleware(
@@ -33,6 +43,12 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup_event():
+        # Exponer /metrics al arrancar la app
+        instrumentator.expose(
+            app,
+            endpoint="/metrics",
+            include_in_schema=False,
+        )
         asyncio.create_task(scheduler())
 
     return app
