@@ -53,5 +53,17 @@ def create_app() -> FastAPI:
 
     return app
 
+    # app/main.py – dentro de create_app()
+
+    @app.get("/")
+    async def root():
+        return {
+            "message": "Service Monitor API is running",
+            "version": "0.1.0",
+            "docs": "/docs",
+            "healthcheck": "/healthz"
+        }
+
+
 
 app = create_app()
