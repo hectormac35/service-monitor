@@ -6,35 +6,48 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import database
 from .routers import services as services_router
 from .checks import run_checks_for_all_services
-from prometheus_fastapi_instrumentator import Instrumentator  # 👈 ya correcto
+from prometheus_fastapi_instrumentator import Instrumentator
 
 
 def create_app() -> FastAPI:
+    # Inicializar la base de datos (crear tablas si no existen)
     database.init_db()
 
     app = FastAPI(title="Service Monitor API", version="0.1.0")
 
-    # --- ENDPOINT DE HEALTHCHECK PARA KUBERNETES ---
-    @app.get("/healthz")
-    async def healthz():
-        return {"status": "ok"}
-
-    # --- MÉTRICAS PARA PROMETHEUS ---
-    # Creamos el instrumentator y enganchamos la app
-    instrumentator = Instrumentator().instrument(app)
-
-    # CORS por si luego montamos frontend
+    # --- CORS (para el futuro frontend) ---
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["*"],  # en producción, restringe esto
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    app.include_router(services_router.router, prefix="/services", tags=["services"])
+    # --- Rutas de servicios ---
+    # OJO: si en routers/services.py ya tienes:
+    # router = APIRouter(prefix="/services", tags=["services"])
+    # entonces aquí debe ser SIN prefix ni tags:
+    app.include_router(services_router.router)
 
-    # Scheduler que comprueba servicios periódicamente
+    # --- Endpoints básicos ---
+    @app.get("/healthz")
+    async def healthz():
+        return {"status": "ok"}
+
+    @app.get("/")
+    async def root():
+        return {
+            "message": "Service Monitor API is running",
+            "version": "0.1.0",
+            "docs": "/docs",
+            "healthcheck": "/healthz",
+        }
+
+    # --- Métricas para Prometheus ---
+    instrumentator = Instrumentator().instrument(app)
+
+    # --- Scheduler que comprueba servicios periódicamente ---
     async def scheduler():
         while True:
             print("🔍 Ejecutando comprobaciones de servicios...")
@@ -49,21 +62,10 @@ def create_app() -> FastAPI:
             endpoint="/metrics",
             include_in_schema=False,
         )
+        # Lanzar el scheduler en segundo plano
         asyncio.create_task(scheduler())
 
     return app
-
-    # app/main.py – dentro de create_app()
-
-    @app.get("/")
-    async def root():
-        return {
-            "message": "Service Monitor API is running",
-            "version": "0.1.0",
-            "docs": "/docs",
-            "healthcheck": "/healthz"
-        }
-
 
 
 app = create_app()

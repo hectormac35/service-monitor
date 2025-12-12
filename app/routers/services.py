@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, database
 from ..notifications import send_telegram_message
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/services",
+    tags=["services"],
+)
 
 
 def get_db():
@@ -19,7 +22,10 @@ def get_db():
 
 
 @router.post("/", response_model=schemas.ServiceRead)
-def create_service(service: schemas.ServiceCreate, db: Session = Depends(get_db)):
+def create_service(
+    service: schemas.ServiceCreate,
+    db: Session = Depends(get_db),
+):
     db_service = models.Service(
         name=service.name,
         url=str(service.url),
@@ -39,15 +45,39 @@ def list_services(db: Session = Depends(get_db)):
 
 @router.get("/{service_id}", response_model=schemas.ServiceRead)
 def get_service(service_id: int, db: Session = Depends(get_db)):
-    service = db.query(models.Service).filter(models.Service.id == service_id).first()
+    service = (
+        db.query(models.Service)
+        .filter(models.Service.id == service_id)
+        .first()
+    )
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
     return service
 
 
+# 🆕 NUEVO: eliminar servicio
+@router.delete("/{service_id}")
+def delete_service(service_id: int, db: Session = Depends(get_db)):
+    service = (
+        db.query(models.Service)
+        .filter(models.Service.id == service_id)
+        .first()
+    )
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    db.delete(service)
+    db.commit()
+    return {"detail": "Service deleted"}
+
+
 @router.get("/{service_id}/status", response_model=schemas.ServiceStatus)
 def get_service_status(service_id: int, db: Session = Depends(get_db)):
-    service = db.query(models.Service).filter(models.Service.id == service_id).first()
+    service = (
+        db.query(models.Service)
+        .filter(models.Service.id == service_id)
+        .first()
+    )
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
 
@@ -70,6 +100,33 @@ def get_service_status(service_id: int, db: Session = Depends(get_db)):
         response_time_ms=last_check.response_time_ms,
         error_message=last_check.error_message,
     )
+
+
+@router.get("/{service_id}/history", response_model=List[schemas.CheckResultRead])
+def get_service_history(
+    service_id: int,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    service = (
+        db.query(models.Service)
+        .filter(models.Service.id == service_id)
+        .first()
+    )
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    checks = (
+        db.query(models.CheckResult)
+        .filter(models.CheckResult.service_id == service_id)
+        .order_by(models.CheckResult.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+
+    # devolvemos en orden cronológico para las gráficas
+    return list(reversed(checks))
+
 
 
 @router.post("/test-notification")

@@ -21,9 +21,13 @@ class Service(Base):
     name = Column(String, nullable=False)
     url = Column(String, nullable=False)
     check_interval_seconds = Column(Integer, nullable=False, default=60)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
 
-    checks = relationship("CheckResult", back_populates="service")
+    checks = relationship(
+        "CheckResult",
+        back_populates="service",
+        cascade="all, delete-orphan",
+    )
 
 
 class CheckResult(Base):

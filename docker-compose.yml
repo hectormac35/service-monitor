@@ -5,14 +5,15 @@ services:
     build: .
     container_name: service-monitor-app
     environment:
-      # Aquí luego usaremos Pydantic Settings
-      - DATABASE_URL=sqlite:///./service_monitor.db
+      # Por ahora, la app no usa DATABASE_URL, pero lo dejamos preparado y coherente
+      - DATABASE_URL=sqlite:///./data/service_monitor.db
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     ports:
       - "8002:8000"
     volumes:
-      - ./service_monitor.db:/app/service_monitor.db
+      # Carpeta 'data' del host -> /app/data del contenedor
+      - ./data:/app/data
     depends_on:
       - prometheus
 

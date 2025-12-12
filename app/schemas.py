@@ -1,12 +1,12 @@
+# app/schemas.py
+from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, HttpUrl
-
 
 class ServiceCreate(BaseModel):
     name: str
     url: HttpUrl
     check_interval_seconds: int = 60
-
 
 class ServiceRead(BaseModel):
     id: int
@@ -18,16 +18,17 @@ class ServiceRead(BaseModel):
     class Config:
         orm_mode = True
 
-
 class ServiceStatus(BaseModel):
     is_up: bool
     status_code: Optional[int]
     response_time_ms: Optional[float]
     error_message: Optional[str] = None
 
+    class Config:
+        orm_mode = True
 
 class CheckResultRead(BaseModel):
-    timestamp: str
+    timestamp: datetime
     status_code: Optional[int]
     is_up: bool
     response_time_ms: Optional[float]
@@ -35,7 +36,6 @@ class CheckResultRead(BaseModel):
 
     class Config:
         orm_mode = True
-
 
 class ServiceWithHistory(ServiceRead):
     checks: List[CheckResultRead] = []
