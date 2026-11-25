@@ -1,0 +1,28 @@
+groups:
+  - name: service-monitor
+    rules:
+      - alert: ServicioCaido
+        expr: service_monitor_service_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service_name }} está caído"
+          description: "El último check de {{ $labels.service_name }} ha fallado durante más de 1 minuto."
+
+      - alert: LatenciaAlta
+        expr: service_monitor_response_time_ms > 1500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service_name }} responde lento"
+          description: "Latencia de {{ $value | humanize }} ms durante 5 minutos."
+
+      - alert: MonitorSinDatos
+        expr: up{job="service-monitor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus no puede leer /metrics de la API"

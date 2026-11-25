@@ -1,3 +1,5 @@
+# Una sola réplica a propósito: el planificador de checks vive dentro del proceso y la BBDD es SQLite.
+# Con 2 réplicas cada pod comprobaría los mismos servicios y enviaría alertas duplicadas.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,7 +7,9 @@ metadata:
   labels:
     app: service-monitor
 spec:
-  replicas: 2
+  replicas: 1
+  strategy:
+    type: Recreate # el volumen SQLite no se puede montar en dos pods a la vez
   selector:
     matchLabels:
       app: service-monitor
@@ -13,26 +17,57 @@ spec:
     metadata:
       labels:
         app: service-monitor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: service-monitor
-          # 👇 CAMBIA ESTO por tu imagen real de Docker Hub
-          image: TU_USUARIO_DOCKER_HUB/service-monitor:latest
+          image: ghcr.io/hectormac35/service-monitor:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8000
+            - name: http
+              containerPort: 8000
           env:
             - name: DATABASE_URL
-              value: "sqlite:///./service_monitor.db"
+              value: sqlite:////app/data/service_monitor.db
+            - name: CORS_ORIGINS
+              value: http://localhost:3001
+          envFrom:
+            - secretRef:
+                name: service-monitor-telegram
+                optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           readinessProbe:
             httpGet:
               path: /healthz
-              port: 8000
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8000
+              port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: service-monitor-data

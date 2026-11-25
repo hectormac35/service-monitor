@@ -1,69 +1,69 @@
 # app/main.py
 import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from . import database
-from .routers import services as services_router
-from .checks import run_checks_for_all_services
 from prometheus_fastapi_instrumentator import Instrumentator
+
+from . import checks, config, database
+from .routers import services as services_router
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("service_monitor")
+
+VERSION = "1.0.0"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    database.init_db()
+    app.state.http_client = checks.crear_cliente()
+    stop = asyncio.Event()
+    tarea = None
+    if config.SCHEDULER_ENABLED:
+        tarea = asyncio.create_task(checks.scheduler_loop(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        if tarea:
+            await tarea
+        await app.state.http_client.aclose()
 
 
 def create_app() -> FastAPI:
-    # Inicializar la base de datos (crear tablas si no existen)
-    database.init_db()
+    app = FastAPI(title="Service Monitor API", version=VERSION, lifespan=lifespan)
 
-    app = FastAPI(title="Service Monitor API", version="0.1.0")
-
-    # --- CORS (para el futuro frontend) ---
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # en producción, restringe esto
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=config.CORS_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["Content-Type"],
     )
 
-    # --- Rutas de servicios ---
-    # OJO: si en routers/services.py ya tienes:
-    # router = APIRouter(prefix="/services", tags=["services"])
-    # entonces aquí debe ser SIN prefix ni tags:
     app.include_router(services_router.router)
 
-    # --- Endpoints básicos ---
-    @app.get("/healthz")
+    @app.get("/healthz", tags=["meta"])
     async def healthz():
         return {"status": "ok"}
 
-    @app.get("/")
+    @app.get("/", tags=["meta"])
     async def root():
         return {
             "message": "Service Monitor API is running",
-            "version": "0.1.0",
+            "version": VERSION,
             "docs": "/docs",
             "healthcheck": "/healthz",
+            "metrics": "/metrics",
         }
 
-    # --- Métricas para Prometheus ---
-    instrumentator = Instrumentator().instrument(app)
-
-    # --- Scheduler que comprueba servicios periódicamente ---
-    async def scheduler():
-        while True:
-            print("🔍 Ejecutando comprobaciones de servicios...")
-            await run_checks_for_all_services()
-            await asyncio.sleep(30)  # cada 30s
-
-    @app.on_event("startup")
-    async def startup_event():
-        # Exponer /metrics al arrancar la app
-        instrumentator.expose(
-            app,
-            endpoint="/metrics",
-            include_in_schema=False,
-        )
-        # Lanzar el scheduler en segundo plano
-        asyncio.create_task(scheduler())
+    # /metrics: métricas HTTP de la API + métricas de negocio (app/metrics.py)
+    Instrumentator(excluded_handlers=["/metrics", "/healthz"]).instrument(app).expose(
+        app, endpoint="/metrics", include_in_schema=False
+    )
 
     return app
 

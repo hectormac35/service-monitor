@@ -1,26 +1,34 @@
 # app/notifications.py
-import os
+import logging
+
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()  # Cargar variables desde .env
+from . import config
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+logger = logging.getLogger("service_monitor.notifications")
 
 
-async def send_telegram_message(text: str):
-    """Envía un mensaje a tu chat de Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados")
-        return
+def telegram_configurado() -> bool:
+    return bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID)
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+
+async def send_telegram_message(text: str) -> bool:
+    """Envía un mensaje al chat de Telegram. Devuelve True si Telegram lo aceptó."""
+    if not telegram_configurado():
+        logger.warning("TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados: alerta no enviada")
+        return False
+
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, data=data)
-            print("✅ Telegram status:", resp.status_code, resp.text)
-    except Exception as e:
-        print("❌ Error enviando mensaje a Telegram:", e)
+        if resp.status_code != 200:
+            # No registramos la URL: contiene el token del bot
+            logger.error("Telegram respondió %s", resp.status_code)
+            return False
+        return True
+    except httpx.HTTPError as exc:
+        logger.error("Error enviando mensaje a Telegram: %s", type(exc).__name__)
+        return False

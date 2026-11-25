@@ -1,37 +1,64 @@
-version: "3.9"
-
 services:
   service-monitor:
     build: .
     container_name: service-monitor-app
     environment:
-      # Por ahora, la app no usa DATABASE_URL, pero lo dejamos preparado y coherente
-      - DATABASE_URL=sqlite:///./data/service_monitor.db
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      DATABASE_URL: sqlite:////app/data/service_monitor.db
+      CORS_ORIGINS: http://localhost:3001
+      HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     ports:
       - "8002:8000"
     volumes:
-      # Carpeta 'data' del host -> /app/data del contenedor
-      - ./data:/app/data
+      - monitor-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8002
+        NEXT_PUBLIC_GRAFANA_URL: http://localhost:3000
+    container_name: service-monitor-frontend
+    ports:
+      - "3001:3000"
     depends_on:
-      - prometheus
+      service-monitor:
+        condition: service_healthy
+    restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.5.0
     container_name: service-monitor-prometheus
     volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
     ports:
       - "9090:9090"
+    depends_on:
+      - service-monitor
+    restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:12.1.0
     container_name: service-monitor-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-cambia-esta-clave}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/service-monitor.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
     ports:
       - "3000:3000"
     depends_on:
       - prometheus
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
+
+volumes:
+  monitor-data:
+  prometheus-data:
+  grafana-data:

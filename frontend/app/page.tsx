@@ -1,195 +1,175 @@
 "use client";
 
+import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FormEvent, useState } from "react";
-import ServiceSparkline from "@/app/components/ServiceSparkline";
+import { FormEvent, useEffect, useState } from "react";
 
+import LatencySparkline from "@/app/components/LatencySparkline";
+import StatusBadge from "@/app/components/StatusBadge";
 import {
+  checkServiceNow,
   createService,
-  getServiceStatus,
-  getServices,
   deleteService,
-  ServiceRead,
-  ServiceStatus,
+  getOverview,
+  ServiceOverview,
+  updateService,
 } from "@/lib/api";
+import { formatIntervalo, formatMs, haceCuanto } from "@/lib/format";
 
+const FORM_INICIAL = { name: "", url: "", check_interval_seconds: 30 };
 
+const inputCls =
+  "px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-700/80 text-slate-100 text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/70 focus:border-sky-500/70";
+const panelCls =
+  "bg-slate-900/70 border border-slate-800/80 rounded-2xl shadow-xl shadow-slate-950/40 backdrop-blur";
+const botonFila =
+  "px-2.5 py-1 rounded-lg text-xs font-medium transition disabled:opacity-50 disabled:cursor-not-allowed";
 
-type ServiceWithStatus = ServiceRead & {
-  status?: ServiceStatus;
-  statusLoading?: boolean;
-  statusError?: string | null;
-};
+function useAhora(intervaloMs = 5000) {
+  const [ahora, setAhora] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setAhora(Date.now()), intervaloMs);
+    return () => clearInterval(t);
+  }, [intervaloMs]);
+  return ahora;
+}
+
+function Kpi({ titulo, valor, detalle }: { titulo: string; valor: React.ReactNode; detalle?: string }) {
+  return (
+    <div className="rounded-xl bg-slate-950/40 border border-slate-800/60 p-3">
+      <p className="text-xs text-slate-400">{titulo}</p>
+      <p className="mt-1 text-2xl font-semibold text-slate-100">{valor}</p>
+      {detalle && <p className="text-[11px] text-slate-500 mt-0.5">{detalle}</p>}
+    </div>
+  );
+}
 
 export default function HomePage() {
   const queryClient = useQueryClient();
+  const ahora = useAhora();
+  const [form, setForm] = useState(FORM_INICIAL);
 
-  const [form, setForm] = useState({
-    name: "",
-    url: "",
-    check_interval_seconds: 30,
+  const { data: services, isLoading, isError, error, dataUpdatedAt } = useQuery<ServiceOverview[], Error>({
+    queryKey: ["overview"],
+    queryFn: getOverview,
+    refetchInterval: 10_000,
   });
 
-  const {
-    data: services,
-    isLoading,
-    isError,
-    error,
-  } = useQuery<ServiceRead[], Error>({
-    queryKey: ["services"],
-    queryFn: getServices,
-  });
+  const refrescar = () => queryClient.invalidateQueries({ queryKey: ["overview"] });
 
   const createMutation = useMutation({
     mutationFn: createService,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["services"] });
-      setForm({ name: "", url: "", check_interval_seconds: 30 });
+    onSuccess: async (nuevo) => {
+      setForm(FORM_INICIAL);
+      // Primera comprobación inmediata para no esperar al planificador
+      await checkServiceNow(nuevo.id).catch(() => undefined);
+      refrescar();
     },
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: deleteService,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["services"] });
-    },
+  const checkMutation = useMutation({ mutationFn: checkServiceNow, onSettled: refrescar });
+
+  const toggleMutation = useMutation({
+    mutationFn: (s: ServiceOverview) => updateService(s.id, { is_active: !s.is_active }),
+    onSettled: refrescar,
   });
 
-  const [statusMap, setStatusMap] = useState<
-    Record<number, ServiceWithStatus["status"] | undefined>
-  >({});
-  const [statusLoadingMap, setStatusLoadingMap] = useState<
-    Record<number, boolean>
-  >({});
-  const [statusErrorMap, setStatusErrorMap] = useState<
-    Record<number, string | null>
-  >({});
+  const deleteMutation = useMutation({ mutationFn: deleteService, onSettled: refrescar });
 
-  // === KPIs para Resumen rápido ===
-  const totalServices = services?.length ?? 0;
+  // === KPIs (solo servicios activos con al menos un check) ===
+  const lista = services ?? [];
+  const activos = lista.filter((s) => s.is_active);
+  const comprobados = activos.filter((s) => s.last_check);
+  const upCount = comprobados.filter((s) => s.last_check?.is_up).length;
+  const downCount = comprobados.length - upCount;
 
-  const statusValues = Object.values(statusMap).filter(
-    (s): s is ServiceStatus => Boolean(s)
-  );
+  const latencias = activos
+    .map((s) => s.avg_latency_ms_24h)
+    .filter((v): v is number => v != null);
+  const avgLatency = latencias.length ? latencias.reduce((a, b) => a + b, 0) / latencias.length : null;
 
-  const upCount = statusValues.filter((s) => s.is_up).length;
-  const downCount = statusValues.filter((s) => !s.is_up).length;
-
-  const latencies = statusValues
-    .map((s) => s.response_time_ms)
-    .filter((v): v is number => v !== null && v !== undefined);
-
-  const avgLatency =
-    latencies.length > 0
-      ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
-      : null;
-  
-  const uptimePercent =
-  statusValues.length > 0
-    ? Math.round((upCount / statusValues.length) * 100)
+  // Uptime global ponderado por número de checks
+  const totalChecks = activos.reduce((acc, s) => acc + s.checks_24h, 0);
+  const uptimeGlobal = totalChecks
+    ? activos.reduce((acc, s) => acc + (s.uptime_24h ?? 0) * s.checks_24h, 0) / totalChecks
     : null;
-
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!form.name || !form.url) return;
-
     createMutation.mutate({
-      name: form.name,
-      url: form.url,
+      name: form.name.trim(),
+      url: form.url.trim(),
       check_interval_seconds: Number(form.check_interval_seconds) || 30,
     });
   };
 
-  const refreshStatus = async (service: ServiceRead) => {
-    setStatusLoadingMap((prev) => ({ ...prev, [service.id]: true }));
-    setStatusErrorMap((prev) => ({ ...prev, [service.id]: null }));
-
-    try {
-      const status = await getServiceStatus(service.id);
-      setStatusMap((prev) => ({ ...prev, [service.id]: status }));
-    } catch (err: any) {
-      setStatusErrorMap((prev) => ({
-        ...prev,
-        [service.id]: err?.message ?? "Error al obtener estado",
-      }));
-    } finally {
-      setStatusLoadingMap((prev) => ({ ...prev, [service.id]: false }));
+  const borrar = (s: ServiceOverview) => {
+    if (window.confirm(`¿Eliminar "${s.name}" y todo su historial?`)) {
+      deleteMutation.mutate(s.id);
     }
   };
 
+  const errorAccion = checkMutation.error ?? toggleMutation.error ?? deleteMutation.error;
+
   return (
     <div className="space-y-8">
-      {/* Cabecera de página */}
-      <section className="flex flex-col gap-2 mb-2">
-        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">
-          Panel de monitorización
-        </h1>
+      <section className="flex flex-col gap-2">
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">Panel de monitorización</h1>
         <p className="text-sm sm:text-base text-slate-300 max-w-2xl">
-          Añade endpoints HTTP y controla su estado en tiempo real usando el
-          backend en FastAPI con Prometheus y Grafana por detrás.
+          Añade endpoints HTTP y sigue su estado en tiempo real. El backend (FastAPI) los comprueba según su
+          intervalo, avisa por Telegram cuando caen o se recuperan y expone métricas para Prometheus y Grafana.
         </p>
       </section>
 
-      {/* Zona superior: formulario + resumen */}
-      <section className="grid gap-6 lg:grid-cols-[2fr,1fr] items-start">
-        {/* Formulario creación servicio */}
-        <div className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-6 shadow-xl shadow-slate-950/40 backdrop-blur">
+      <section className="grid gap-6 lg:grid-cols-[3fr_2fr] items-start">
+        {/* Alta de servicio */}
+        <div className={`${panelCls} p-6`}>
           <h2 className="text-lg font-semibold mb-1">Añadir servicio</h2>
           <p className="text-xs text-slate-400 mb-4">
-            Define el nombre, la URL a monitorizar y cada cuánto tiempo quieres
-            que se compruebe.
+            Nombre, URL a comprobar y cada cuántos segundos (mínimo 10).
           </p>
 
-          <form
-            onSubmit={handleSubmit}
-            className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
-          >
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-slate-300">
-                Nombre
-              </label>
+          <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-[1fr_1.4fr_0.7fr]">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-300">Nombre</span>
               <input
-                className="px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-700/80 text-slate-100 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/70 focus:border-sky-500/70"
+                className={inputCls}
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="API producción, Google, etc."
+                placeholder="API producción"
+                maxLength={100}
                 required
               />
-            </div>
+            </label>
 
-            <div className="flex flex-col gap-1 md:col-span-1 xl:col-span-1">
-              <label className="text-xs font-medium text-slate-300">
-                URL
-              </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-300">URL</span>
               <input
-                className="px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-700/80 text-slate-100 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/70 focus:border-sky-500/70"
+                type="url"
+                className={inputCls}
                 value={form.url}
                 onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
                 placeholder="https://midominio.com/health"
                 required
               />
-            </div>
+            </label>
 
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-slate-300">
-                Intervalo (segundos)
-              </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-300">Intervalo (s)</span>
               <input
                 type="number"
                 min={10}
-                className="px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-700/80 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/70 focus:border-sky-500/70"
+                max={86400}
+                className={inputCls}
                 value={form.check_interval_seconds}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    check_interval_seconds: Number(e.target.value),
-                  }))
-                }
+                onChange={(e) => setForm((f) => ({ ...f, check_interval_seconds: Number(e.target.value) }))}
               />
-            </div>
+            </label>
 
-            <div className="md:col-span-2 xl:col-span-3 flex justify-end items-end">
+            <div className="md:col-span-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-red-400 min-h-4">
+                {createMutation.isError ? createMutation.error.message : ""}
+              </p>
               <button
                 type="submit"
                 disabled={createMutation.isPending}
@@ -199,195 +179,155 @@ export default function HomePage() {
               </button>
             </div>
           </form>
-
-          {createMutation.isError && (
-            <p className="mt-3 text-xs text-red-400">
-              Error al crear servicio: {(createMutation.error as any)?.message}
-            </p>
-          )}
         </div>
 
-        {/* Tarjeta de resumen rápida */}
-        <div className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5 shadow-xl shadow-slate-950/50 backdrop-blur">
-          <h3 className="text-sm font-semibold text-slate-100 mb-4">
-            Resumen rápido
-          </h3>
-
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
-            {/* Servicios */}
-            <div>
-              <p className="text-slate-400">Servicios monitorizados</p>
-              <p className="text-2xl font-semibold text-slate-100">
-                {totalServices}
-              </p>
-            </div>
-
-            {/* Estado */}
-            <div>
-              <p className="text-slate-400">Estado actual</p>
-              <p className="mt-1">
-                <span className="text-emerald-400 font-semibold">
-                  {upCount} UP
+        {/* Resumen */}
+        <div className={`${panelCls} p-5`}>
+          <div className="flex items-baseline justify-between mb-4">
+            <h3 className="text-sm font-semibold text-slate-100">Resumen</h3>
+            <span className="text-[11px] text-slate-500">
+              {dataUpdatedAt ? `actualizado ${haceCuanto(new Date(dataUpdatedAt).toISOString(), ahora)}` : ""}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <Kpi titulo="Servicios" valor={lista.length} detalle={`${activos.length} activos`} />
+            <Kpi
+              titulo="Estado actual"
+              valor={
+                <span className="text-xl">
+                  <span className="text-emerald-400">{upCount} UP</span>
+                  <span className="text-slate-600"> · </span>
+                  <span className={downCount ? "text-red-400" : "text-slate-500"}>{downCount} DOWN</span>
                 </span>
-                {" · "}
-                <span className="text-red-400 font-semibold">
-                  {downCount} DOWN
-                </span>
-              </p>
-            </div>
-
-            {/* Latencia */}
-            <div>
-              <p className="text-slate-400">Latencia media</p>
-              <p className="text-2xl font-semibold text-slate-100">
-                {avgLatency !== null ? `${avgLatency} ms` : "—"}
-              </p>
-            </div>
-
-            {/* Uptime */}
-            <div>
-              <p className="text-slate-400">Uptime</p>
-              <p className="text-2xl font-semibold text-slate-100">
-                {uptimePercent !== null ? `${uptimePercent}%` : "—"}
-              </p>
-            </div>
-
+              }
+            />
+            <Kpi titulo="Latencia media" valor={formatMs(avgLatency)} detalle="últimas 24 h" />
+            <Kpi
+              titulo="Uptime"
+              valor={uptimeGlobal != null ? `${uptimeGlobal.toFixed(1)}%` : "—"}
+              detalle={`${totalChecks} checks en 24 h`}
+            />
           </div>
         </div>
-
       </section>
 
       {/* Tabla de servicios */}
-      <section className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-6 shadow-xl shadow-slate-950/40 backdrop-blur space-y-4">
+      <section className={`${panelCls} p-6 space-y-4`}>
         <div className="flex items-center justify-between gap-2">
           <div>
             <h2 className="text-lg font-semibold">Servicios</h2>
-            <p className="text-xs text-slate-400">
-              Lista de endpoints que se están monitorizando.
-            </p>
+            <p className="text-xs text-slate-400">Se actualiza solo cada 10 segundos.</p>
           </div>
-          <span className="text-xs text-slate-400">
-            {services?.length ?? 0} servicios
-          </span>
+          {errorAccion && <p className="text-xs text-red-400">{errorAccion.message}</p>}
         </div>
 
         {isLoading && <p className="text-sm text-slate-300">Cargando servicios...</p>}
 
-        {isError && (
-          <p className="text-sm text-red-400">
-            Error al cargar servicios: {error?.message}
-          </p>
+        {isError && <p className="text-sm text-red-400">Error al cargar servicios: {error.message}</p>}
+
+        {!isLoading && !isError && lista.length === 0 && (
+          <p className="text-sm text-slate-400">No hay servicios aún. Crea el primero con el formulario de arriba.</p>
         )}
 
-        {!isLoading && !isError && (services?.length ?? 0) === 0 && (
-          <p className="text-sm text-slate-400">
-            No hay servicios aún. Crea el primero con el formulario de arriba.
-          </p>
-        )}
-
-        {!isLoading && !isError && services && services.length > 0 && (
+        {lista.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-slate-800/80">
             <table className="min-w-full text-sm bg-slate-950/40">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-300 bg-slate-950/60">
-                  <th className="text-left py-2 px-4">Nombre</th>
-                  <th className="text-left py-2 px-4">URL</th>
-                  <th className="text-left py-2 px-4">Intervalo</th>
-                  <th className="text-left py-2 px-4">Estado</th>
-                  <th className="text-left py-2 px-4">Latencia</th>
-                  <th className="text-left py-2 px-4">Acciones</th>
-                  
+                <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase tracking-wide bg-slate-950/60">
+                  <th className="text-left py-2.5 px-4 font-medium">Servicio</th>
+                  <th className="text-left py-2.5 px-4 font-medium">Estado</th>
+                  <th className="text-left py-2.5 px-4 font-medium">Latencia</th>
+                  <th className="text-left py-2.5 px-4 font-medium">Uptime 24 h</th>
+                  <th className="text-left py-2.5 px-4 font-medium">Intervalo</th>
+                  <th className="text-right py-2.5 px-4 font-medium">Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {services.map((service) => {
-                  const status = statusMap[service.id];
-                  const statusLoading = statusLoadingMap[service.id];
-                  const statusError = statusErrorMap[service.id];
-
-                  const badgeClass =
-                    status?.is_up == null
-                      ? "bg-slate-600 text-slate-100"
-                      : status.is_up
-                      ? "bg-emerald-600 text-emerald-50"
-                      : "bg-red-600 text-red-50";
-
-                  const badgeText =
-                    status?.is_up == null
-                      ? "Desconocido"
-                      : status.is_up
-                      ? "UP"
-                      : "DOWN";
-
+                {lista.map((s) => {
+                  const ultimo = s.last_check;
+                  const comprobando = checkMutation.isPending && checkMutation.variables === s.id;
                   return (
                     <tr
-                      key={service.id}
-                      className="border-b border-slate-800/80 last:border-0 hover:bg-slate-900/60 transition-colors"
+                      key={s.id}
+                      className={`border-b border-slate-800/80 last:border-0 hover:bg-slate-900/60 transition-colors ${
+                        s.is_active ? "" : "opacity-60"
+                      }`}
                     >
-                      <td className="py-2 px-4 font-medium">
+                      <td className="py-3 px-4 max-w-xs">
+                        <Link href={`/services/${s.id}`} className="font-medium text-slate-100 hover:text-sky-300">
+                          {s.name}
+                        </Link>
                         <a
-                          href={`/services/${service.id}`}
-                          className="text-sky-400 hover:underline"
-                        >
-                          {service.name}
-                        </a>
-                      </td>
-
-                      <td className="py-2 px-4">
-                        <ServiceSparkline serviceId={service.id} />
-                      </td>
-
-
-                      <td className="py-2 px-4">
-                        <a
-                          href={service.url}
+                          href={s.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-sky-400 hover:underline break-all"
+                          className="block text-xs text-slate-500 hover:text-sky-400 truncate"
+                          title={s.url}
                         >
-                          {service.url}
+                          {s.url}
                         </a>
                       </td>
-                      <td className="py-2 px-4 text-slate-300">
-                        {service.check_interval_seconds}s
+                      <td className="py-3 px-4">
+                        <StatusBadge isUp={ultimo?.is_up} paused={!s.is_active} />
+                        <p className="text-[11px] text-slate-500 mt-1 whitespace-nowrap">
+                          {ultimo
+                            ? `${ultimo.status_code ? `HTTP ${ultimo.status_code}` : "Sin respuesta"} · ${haceCuanto(
+                                ultimo.timestamp,
+                                ahora
+                              )}`
+                            : "aún sin comprobar"}
+                        </p>
                       </td>
-                      <td className="py-2 px-4">
-                        {statusLoading ? (
-                          <span className="text-slate-400 text-xs">
-                            Consultando...
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-3">
+                          <LatencySparkline latencies={s.recent_latencies} ups={s.recent_up} />
+                          <span className="text-xs text-slate-300 tabular-nums w-14">
+                            {formatMs(ultimo?.response_time_ms)}
                           </span>
-                        ) : statusError ? (
-                          <span className="text-xs text-red-400">
-                            {statusError}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 tabular-nums">
+                        {s.uptime_24h != null ? (
+                          <span
+                            className={
+                              s.uptime_24h >= 99
+                                ? "text-emerald-300"
+                                : s.uptime_24h >= 90
+                                  ? "text-amber-300"
+                                  : "text-red-300"
+                            }
+                          >
+                            {s.uptime_24h.toFixed(1)}%
                           </span>
                         ) : (
-                          <div className="flex flex-col gap-1">
-                            <span
-                              className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${badgeClass}`}
-                            >
-                              {badgeText}
-                            </span>
-                            {status && (
-                              <span className="text-xs text-slate-400">
-                                {status.status_code
-                                  ? `HTTP ${status.status_code}`
-                                  : "Sin respuesta"}{" "}
-                                {status.response_time_ms &&
-                                  `· ${status.response_time_ms.toFixed(
-                                    1
-                                  )} ms`}
-                              </span>
-                            )}
-                          </div>
+                          <span className="text-slate-500">—</span>
                         )}
                       </td>
-                      <td className="py-2 px-4">
-                        <button
-                          onClick={() => refreshStatus(service)}
-                          className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-100"
-                        >
-                          Ver estado ahora
-                        </button>
+                      <td className="py-3 px-4 text-slate-300">{formatIntervalo(s.check_interval_seconds)}</td>
+                      <td className="py-3 px-4">
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            onClick={() => checkMutation.mutate(s.id)}
+                            disabled={comprobando}
+                            className={`${botonFila} bg-sky-600/20 text-sky-200 hover:bg-sky-600/40`}
+                          >
+                            {comprobando ? "Comprobando..." : "Comprobar"}
+                          </button>
+                          <button
+                            onClick={() => toggleMutation.mutate(s)}
+                            disabled={toggleMutation.isPending}
+                            className={`${botonFila} bg-slate-800 text-slate-200 hover:bg-slate-700`}
+                          >
+                            {s.is_active ? "Pausar" : "Reanudar"}
+                          </button>
+                          <button
+                            onClick={() => borrar(s)}
+                            disabled={deleteMutation.isPending}
+                            className={`${botonFila} bg-red-600/15 text-red-300 hover:bg-red-600/35`}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
