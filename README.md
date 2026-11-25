@@ -39,7 +39,7 @@ el estado, cuándo se comprobó, la latencia de los últimos 20 checks y el upti
 En el detalle de cada servicio aparecen el uptime, la latencia media y p95, las gráficas de latencia y disponibilidad y
 la tabla de los últimos checks con su error.
 
-> Las capturas usan datos de ejemplo cargados en una base de datos local.
+> La captura del detalle usa datos de ejemplo; el resto son de una ejecución real con `docker compose up`.
 
 ## ✦ Arquitectura
 
@@ -59,6 +59,23 @@ la tabla de los últimos checks con su error.
   - `service_monitor_alerts_total`.
 
   Grafana arranca con la fuente de datos y el dashboard ya cargados.
+
+## ✦ Observabilidad
+
+<img src="docs/images/grafana.webp" alt="Dashboard de Grafana" width="100%">
+
+Grafana arranca con el dashboard **Service Monitor** ya cargado. Muestra:
+- servicios UP y DOWN;
+- latencia por servicio;
+- checks por minuto;
+- peticiones a la API.
+
+<img src="docs/images/prometheus-alertas.webp" alt="Alertas de Prometheus" width="100%">
+
+Prometheus evalúa tres reglas:
+- `ServicioCaido`: un servicio lleva más de 1 minuto caído. En la captura salta por un servicio caído a propósito.
+- `LatenciaAlta`: la latencia supera 1,5 s durante 5 minutos.
+- `MonitorSinDatos`: Prometheus no consigue leer `/metrics`.
 
 ## ✦ Alertas sin spam
 
